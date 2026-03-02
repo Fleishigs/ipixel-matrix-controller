@@ -211,6 +211,7 @@ function App() {
 
   const [deviceFilter, setDeviceFilter] = useState('LED_BLE_');
   const [scanAll, setScanAll] = useState(false);
+  const [testMode, setTestMode] = useState(false);
 
   const [logs, setLogs] = useState([]);
   const [sending, setSending] = useState(false);
@@ -366,7 +367,7 @@ function App() {
   }
 
   async function writeChunked(data) {
-    if (!writeChar) {
+    if (!writeChar && !testMode) {
       log('Not connected', 'error');
       return false;
     }
@@ -375,8 +376,13 @@ function App() {
     for (let i = 0; i < data.length; i += MTU) {
       const chunk = data.slice(i, i + MTU);
       try {
-        await writeChar.writeValue(chunk);
-        log(`Sent chunk ${Math.floor(i/MTU)+1}/${Math.ceil(data.length/MTU)}: [${Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'tx');
+        if (testMode) {
+          // Test mode: just log what would be sent
+          log(`[TEST] Chunk ${Math.floor(i/MTU)+1}/${Math.ceil(data.length/MTU)}: [${Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'tx');
+        } else {
+          await writeChar.writeValue(chunk);
+          log(`Sent chunk ${Math.floor(i/MTU)+1}/${Math.ceil(data.length/MTU)}: [${Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'tx');
+        }
         await new Promise(r => setTimeout(r, 20));
       } catch (err) {
         log(`Write error: ${err.message}`, 'error');
@@ -384,6 +390,86 @@ function App() {
       }
     }
     return true;
+  }
+
+  function enableTestMode() {
+    setTestMode(true);
+    setConnected(true);
+    setDevice({ name: 'TEST_DEVICE (Simulated)' });
+    log('🧪 TEST MODE ENABLED - No real device connected', 'warning');
+    log('All commands will be logged but not sent to hardware', 'info');
+    log('Use "Download PNG" to verify the image output', 'info');
+  }
+
+  function disableTestMode() {
+    setTestMode(false);
+    setConnected(false);
+    setDevice(null);
+    setWriteChar(null);
+    log('Test mode disabled', 'info');
+  }
+
+  async function downloadPNG() {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
+
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${fontSize}px Rubik`;
+    ctx.textBaseline = 'top';
+
+    // Use reversed text for Hebrew (what device would receive)
+    const deviceText = isHebrew(text) ? reverseHebrew(text) : text;
+    ctx.fillText(deviceText, 0, yOffset);
+
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `matrix-${displayWidth}x${displayHeight}.png`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    log(`Downloaded PNG: ${blob.size} bytes (${displayWidth}x${displayHeight})`, 'success');
+
+    // Re-render preview with non-reversed text
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, 0, yOffset);
+  }
+
+  function runProtocolTest() {
+    log('═══ PROTOCOL TEST START ═══', 'info');
+
+    // Test brightness command
+    const brightnessCmd = [0x05, 0x00, 0x04, 0x80, brightness];
+    log(`Brightness (${brightness}%): [${brightnessCmd.map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'info');
+
+    // Test power on command
+    const powerCmd = [0x05, 0x00, 0x07, 0x01, 0x01];
+    log(`Power On: [${powerCmd.map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'info');
+
+    // Test animation command
+    const animCmd = [0x06, 0x00, 0x05, 0x80, animation, speed];
+    log(`Animation (mode=${animation}, speed=${speed}): [${animCmd.map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'info');
+
+    // Test rainbow command
+    const rainbowCmd = [0x05, 0x00, 0x06, 0x80, rainbow];
+    log(`Rainbow (mode=${rainbow}): [${rainbowCmd.map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'info');
+
+    // Test PNG header structure
+    log(`PNG Header structure: [len_lo, len_hi, 0x02, 0x00, 0x00, size(4B LE), crc32(4B LE), 0x00, slot]`, 'info');
+    log(`Current slot: ${slot} (${slot === 0 ? 'preview only' : 'saves to EEPROM'})`, 'info');
+
+    // Check Hebrew detection
+    const hebrewDetected = isHebrew(text);
+    log(`Hebrew detected: ${hebrewDetected ? 'YES (will reverse for device, scroll right)' : 'NO (normal LTR)'}`, 'info');
+
+    log('═══ PROTOCOL TEST END ═══', 'success');
   }
 
   async function sendBrightness() {
@@ -446,9 +532,13 @@ function App() {
   }
 
   async function sendToDisplay() {
-    if (!connected) {
+    if (!connected && !testMode) {
       log('Not connected to device', 'error');
       return;
+    }
+
+    if (testMode) {
+      log('═══ TEST: Simulating send to display ═══', 'warning');
     }
 
     setSending(true);
@@ -629,20 +719,28 @@ function App() {
 
             <div style={styles.connectionButtons}>
               {!connected ? (
-                <button
-                  style={{...styles.button, ...styles.buttonCyan}}
-                  onClick={connect}
-                  disabled={connecting}
-                >
-                  {connecting ? '⟳ SCANNING...' : '◉ CONNECT DEVICE'}
-                </button>
+                <>
+                  <button
+                    style={{...styles.button, ...styles.buttonCyan}}
+                    onClick={connect}
+                    disabled={connecting}
+                  >
+                    {connecting ? '⟳ SCANNING...' : '◉ CONNECT DEVICE'}
+                  </button>
+                  <button
+                    style={{...styles.button, ...styles.buttonOrange}}
+                    onClick={enableTestMode}
+                  >
+                    🧪 TEST MODE
+                  </button>
+                </>
               ) : (
                 <>
                   <button
                     style={{...styles.button, ...styles.buttonRed}}
-                    onClick={disconnect}
+                    onClick={testMode ? disableTestMode : disconnect}
                   >
-                    ✕ DISCONNECT
+                    ✕ {testMode ? 'EXIT TEST' : 'DISCONNECT'}
                   </button>
                   <button
                     style={{...styles.button, ...styles.buttonYellow}}
@@ -653,6 +751,27 @@ function App() {
                 </>
               )}
             </div>
+
+            {/* Test Tools */}
+            {testMode && (
+              <div style={styles.testTools}>
+                <div style={styles.testBadge}>🧪 TEST MODE ACTIVE</div>
+                <div style={styles.testButtons}>
+                  <button
+                    style={{...styles.button, ...styles.buttonSmall, ...styles.buttonCyan}}
+                    onClick={runProtocolTest}
+                  >
+                    ✓ PROTOCOL TEST
+                  </button>
+                  <button
+                    style={{...styles.button, ...styles.buttonSmall, ...styles.buttonGreen}}
+                    onClick={downloadPNG}
+                  >
+                    ⬇ DOWNLOAD PNG
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           {/* Text Input Panel */}
@@ -1130,6 +1249,36 @@ const styles = {
     background: 'rgba(170, 68, 255, 0.1)',
     borderColor: 'var(--accent-purple)',
     color: 'var(--accent-purple)',
+  },
+  buttonOrange: {
+    background: 'rgba(255, 102, 0, 0.1)',
+    borderColor: 'var(--accent-orange)',
+    color: 'var(--accent-orange)',
+  },
+  buttonGreen: {
+    background: 'rgba(0, 255, 136, 0.1)',
+    borderColor: 'var(--accent-green)',
+    color: 'var(--accent-green)',
+  },
+  testTools: {
+    marginTop: '12px',
+    padding: '12px',
+    background: 'rgba(255, 102, 0, 0.1)',
+    border: '1px dashed var(--accent-orange)',
+    borderRadius: '4px',
+  },
+  testBadge: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    color: 'var(--accent-orange)',
+    marginBottom: '10px',
+    textAlign: 'center',
+  },
+  testButtons: {
+    display: 'flex',
+    gap: '8px',
+    flexWrap: 'wrap',
   },
   buttonSmall: {
     padding: '6px 12px',
