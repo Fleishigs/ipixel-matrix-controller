@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iPixel Matrix Controller</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-primary: #0a0a0f;
+      --bg-secondary: #12121a;
+      --bg-tertiary: #1a1a25;
+      --bg-card: #15151f;
+      --border-dim: #2a2a3a;
+      --border-glow: #3a3a5a;
+      --text-primary: #e8e8f0;
+      --text-secondary: #8888a0;
+      --text-dim: #555570;
+      --accent-cyan: #00f5ff;
+      --accent-magenta: #ff00aa;
+      --accent-green: #00ff88;
+      --accent-yellow: #ffee00;
+      --accent-orange: #ff6600;
+      --accent-purple: #aa44ff;
+      --glow-cyan: 0 0 20px rgba(0, 245, 255, 0.4);
+      --glow-magenta: 0 0 20px rgba(255, 0, 170, 0.4);
+      --glow-green: 0 0 20px rgba(0, 255, 136, 0.4);
+      --glow-purple: 0 0 20px rgba(170, 68, 255, 0.4);
+    }
+
+    html { font-size: 14px; }
+
+    body {
+      font-family: 'Rubik', sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      line-height: 1.5;
+      background-image:
+        radial-gradient(ellipse at 20% 0%, rgba(0, 245, 255, 0.08) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 100%, rgba(255, 0, 170, 0.06) 0%, transparent 50%),
+        linear-gradient(180deg, var(--bg-primary) 0%, #08080c 100%);
+      background-attachment: fixed;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0, 245, 255, 0.015) 2px,
+        rgba(0, 245, 255, 0.015) 4px
+      );
+      pointer-events: none;
+      z-index: 1000;
+    }
+
+    #root { position: relative; z-index: 1; }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+    ::-webkit-scrollbar-thumb { background: var(--border-glow); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--accent-cyan); }
+
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    @keyframes scan-line {
+      0% { transform: translateY(-100%); }
+      100% { transform: translateY(100vh); }
+    }
+
+    @keyframes rainbow-shift {
+      0% { filter: hue-rotate(0deg); }
+      100% { filter: hue-rotate(360deg); }
+    }
+
+    @keyframes flicker {
+      0%, 100% { opacity: 1; }
+      92% { opacity: 1; }
+      93% { opacity: 0.8; }
+      94% { opacity: 1; }
+      96% { opacity: 0.9; }
+      97% { opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+const { useState, useRef, useEffect, useCallback } = React;
+
+// BLE UUIDs
+const SERVICE_UUID = '0000fa00-0000-1000-8000-00805f9b34fb';
+const WRITE_UUID = '0000fa02-0000-1000-8000-00805f9b34fb';
+const NOTIFY_UUID = '0000fa01-0000-1000-8000-00805f9b34fb';
+
+// CRC32 lookup table
+const CRC32_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let j = 0; j < 8; j++) {
+      c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    }
+    table[i] = c;
+  }
+  return table;
+})();
+
+function crc32(data) {
+  let crc = 0xFFFFFFFF;
+  for (let i = 0; i < data.length; i++) {
+    crc = CRC32_TABLE[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+// Purim presets
+const PURIM_PRESETS = [
+  { text: 'א פרייליכן פורים', name: 'A Freilichen Purim' },
+  { text: '🤮 עד דלא ידע 🤮', name: 'Ad Delo Yada' },
+  { text: 'אורה זו תורה', name: 'Orah Zu Torah' },
+  { text: 'ארור המן ברוך מרדכי', name: 'Arur Haman Baruch Mordechai' },
+  { text: 'ארור מרדכי ברוך המן', name: 'Arur Mordechai Baruch Haman' },
+  { text: "If you can read this you're too sober", name: 'Too Sober' },
+  { text: 'חייב איניש לבסומי', name: 'Chayav Inish' },
+  { text: 'מי שלא נותן מקבל המן טאש', name: 'Hamantash Warning' },
+  { text: 'עני בא לפניך ואתה מסתכל על הכובע', name: 'Poor Man & Hat' },
+  { text: "Even $100 is fine I'm not judging", name: '$100 Is Fine' },
+];
+
+const ANIMATION_MODES = [
+  { value: 0, label: 'None', icon: '⬜' },
+  { value: 1, label: 'Scroll Left', icon: '⬅️' },
+  { value: 2, label: 'Scroll Right', icon: '➡️' },
+  { value: 3, label: 'Scroll Up', icon: '⬆️' },
+  { value: 4, label: 'Scroll Down', icon: '⬇️' },
+];
+
+const RAINBOW_MODES = [
+  { value: 0, label: 'Off' },
+  { value: 1, label: 'Mode 1' },
+  { value: 2, label: 'Mode 2' },
+  { value: 3, label: 'Mode 3' },
+  { value: 4, label: 'Mode 4' },
+  { value: 5, label: 'Mode 5' },
+  { value: 6, label: 'Mode 6' },
+  { value: 7, label: 'Mode 7' },
+  { value: 8, label: 'Mode 8' },
+  { value: 9, label: 'Full Rainbow' },
+];
+
+function isHebrew(text) {
+  return /[\u0590-\u05FF]/.test(text);
+}
+
+function reverseHebrew(text) {
+  if (!isHebrew(text)) return text;
+  // Split into segments, reverse Hebrew parts
+  const segments = [];
+  let currentSegment = '';
+  let currentIsHebrew = false;
+
+  for (const char of text) {
+    const charIsHebrew = /[\u0590-\u05FF]/.test(char);
+    if (currentSegment && charIsHebrew !== currentIsHebrew) {
+      segments.push({ text: currentSegment, hebrew: currentIsHebrew });
+      currentSegment = '';
+    }
+    currentSegment += char;
+    currentIsHebrew = charIsHebrew;
+  }
+  if (currentSegment) {
+    segments.push({ text: currentSegment, hebrew: currentIsHebrew });
+  }
+
+  // Reverse entire string for RTL display
+  return text.split('').reverse().join('');
+}
+
+function App() {
+  const [device, setDevice] = useState(null);
+  const [writeChar, setWriteChar] = useState(null);
+  const [notifyChar, setNotifyChar] = useState(null);
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+
+  const [text, setText] = useState('חג פורים שמח');
+  const [fontSize, setFontSize] = useState(15);
+  const [yOffset, setYOffset] = useState(-3);
+  const [displayWidth, setDisplayWidth] = useState(64);
+  const [displayHeight, setDisplayHeight] = useState(20);
+  const [animation, setAnimation] = useState(1);
+  const [speed, setSpeed] = useState(50);
+  const [rainbow, setRainbow] = useState(9);
+  const [slot, setSlot] = useState(0);
+  const [brightness, setBrightness] = useState(80);
+
+  const [logs, setLogs] = useState([]);
+  const [sending, setSending] = useState(false);
+  const [fontLoaded, setFontLoaded] = useState(false);
+
+  const canvasRef = useRef(null);
+  const previewCanvasRef = useRef(null);
+  const logRef = useRef(null);
+
+  const log = useCallback((msg, type = 'info') => {
+    const timestamp = new Date().toLocaleTimeString('en-US', { hour12: false });
+    setLogs(prev => [...prev.slice(-100), { msg, type, timestamp }]);
+  }, []);
+
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
+
+  // Load font
+  useEffect(() => {
+    document.fonts.ready.then(() => {
+      document.fonts.load('700 20px Rubik').then(() => {
+        setFontLoaded(true);
+        log('Rubik Bold font loaded', 'success');
+      });
+    });
+  }, [log]);
+
+  // Render canvas preview
+  useEffect(() => {
+    if (!fontLoaded) return;
+
+    const canvas = canvasRef.current;
+    const preview = previewCanvasRef.current;
+    if (!canvas || !preview) return;
+
+    canvas.width = displayWidth;
+    canvas.height = displayHeight;
+
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(0, 0, displayWidth, displayHeight);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `700 ${fontSize}px Rubik`;
+    ctx.textBaseline = 'top';
+
+    const displayText = isHebrew(text) ? reverseHebrew(text) : text;
+    ctx.fillText(displayText, 0, yOffset);
+
+    // Draw pixelated preview
+    const pCtx = preview.getContext('2d');
+    const scale = 8;
+    preview.width = displayWidth * scale;
+    preview.height = displayHeight * scale;
+
+    pCtx.imageSmoothingEnabled = false;
+    pCtx.fillStyle = '#000000';
+    pCtx.fillRect(0, 0, preview.width, preview.height);
+
+    const imageData = ctx.getImageData(0, 0, displayWidth, displayHeight);
+
+    for (let y = 0; y < displayHeight; y++) {
+      for (let x = 0; x < displayWidth; x++) {
+        const i = (y * displayWidth + x) * 4;
+        const brightness = imageData.data[i];
+        if (brightness > 30) {
+          pCtx.fillStyle = `rgb(${brightness}, ${brightness}, ${brightness})`;
+          pCtx.fillRect(x * scale + 1, y * scale + 1, scale - 2, scale - 2);
+        } else {
+          pCtx.fillStyle = '#111118';
+          pCtx.fillRect(x * scale + 1, y * scale + 1, scale - 2, scale - 2);
+        }
+      }
+    }
+  }, [text, fontSize, yOffset, displayWidth, displayHeight, fontLoaded]);
+
+  async function connect() {
+    if (!navigator.bluetooth) {
+      log('Web Bluetooth not supported. Use Chrome/Edge on HTTPS.', 'error');
+      return;
+    }
+
+    try {
+      setConnecting(true);
+      log('Scanning for LED_BLE_ devices...', 'info');
+
+      const bleDevice = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'LED_BLE_' }],
+        optionalServices: [SERVICE_UUID]
+      });
+
+      log(`Found device: ${bleDevice.name}`, 'success');
+
+      bleDevice.addEventListener('gattserverdisconnected', () => {
+        log('Device disconnected', 'warning');
+        setConnected(false);
+        setDevice(null);
+        setWriteChar(null);
+        setNotifyChar(null);
+      });
+
+      const server = await bleDevice.gatt.connect();
+      log('Connected to GATT server', 'success');
+
+      const service = await server.getPrimaryService(SERVICE_UUID);
+      log('Got primary service', 'info');
+
+      const wChar = await service.getCharacteristic(WRITE_UUID);
+      const nChar = await service.getCharacteristic(NOTIFY_UUID);
+
+      await nChar.startNotifications();
+      nChar.addEventListener('characteristicvaluechanged', (event) => {
+        const value = new Uint8Array(event.target.value.buffer);
+        log(`Notify: [${Array.from(value).map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'notify');
+      });
+
+      setDevice(bleDevice);
+      setWriteChar(wChar);
+      setNotifyChar(nChar);
+      setConnected(true);
+      log('Ready to send commands!', 'success');
+
+    } catch (err) {
+      log(`Connection failed: ${err.message}`, 'error');
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function disconnect() {
+    if (device?.gatt?.connected) {
+      device.gatt.disconnect();
+    }
+    setConnected(false);
+    setDevice(null);
+    setWriteChar(null);
+    setNotifyChar(null);
+    log('Disconnected', 'info');
+  }
+
+  async function writeChunked(data) {
+    if (!writeChar) {
+      log('Not connected', 'error');
+      return false;
+    }
+
+    const MTU = 20;
+    for (let i = 0; i < data.length; i += MTU) {
+      const chunk = data.slice(i, i + MTU);
+      try {
+        await writeChar.writeValue(chunk);
+        log(`Sent chunk ${Math.floor(i/MTU)+1}/${Math.ceil(data.length/MTU)}: [${Array.from(chunk).map(b => b.toString(16).padStart(2, '0')).join(' ')}]`, 'tx');
+        await new Promise(r => setTimeout(r, 20));
+      } catch (err) {
+        log(`Write error: ${err.message}`, 'error');
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function sendBrightness() {
+    const cmd = new Uint8Array([0x05, 0x00, 0x04, 0x80, brightness]);
+    log(`Setting brightness to ${brightness}%`, 'info');
+    await writeChunked(cmd);
+  }
+
+  async function sendPowerOn() {
+    const cmd = new Uint8Array([0x05, 0x00, 0x07, 0x01, 0x01]);
+    log('Sending power on', 'info');
+    await writeChunked(cmd);
+  }
+
+  async function sendAnimation(mode, spd) {
+    const cmd = new Uint8Array([0x06, 0x00, 0x05, 0x80, mode, spd]);
+    log(`Setting animation mode ${mode}, speed ${spd}`, 'info');
+    await writeChunked(cmd);
+  }
+
+  async function sendRainbow(mode) {
+    const cmd = new Uint8Array([0x05, 0x00, 0x06, 0x80, mode]);
+    log(`Setting rainbow mode ${mode}`, 'info');
+    await writeChunked(cmd);
+  }
+
+  async function sendPNG(pngData, bufferNum = 0) {
+    const size = pngData.length;
+    const crc = crc32(pngData);
+
+    // Build header: [len_lo, len_hi, 0x02, 0x00, 0x00, size_4bytes_LE, crc32_4bytes_LE, 0x00, buffer_number]
+    const headerLen = 11 + pngData.length; // 11 bytes header + png data
+    const totalLen = 2 + headerLen; // +2 for length bytes
+
+    const packet = new Uint8Array(totalLen);
+    packet[0] = headerLen & 0xFF;
+    packet[1] = (headerLen >> 8) & 0xFF;
+    packet[2] = 0x02;
+    packet[3] = 0x00;
+    packet[4] = 0x00;
+    // Size (4 bytes LE)
+    packet[5] = size & 0xFF;
+    packet[6] = (size >> 8) & 0xFF;
+    packet[7] = (size >> 16) & 0xFF;
+    packet[8] = (size >> 24) & 0xFF;
+    // CRC32 (4 bytes LE)
+    packet[9] = crc & 0xFF;
+    packet[10] = (crc >> 8) & 0xFF;
+    packet[11] = (crc >> 16) & 0xFF;
+    packet[12] = (crc >> 24) & 0xFF;
+    // Reserved
+    packet[13] = 0x00;
+    // Buffer number
+    packet[14] = bufferNum;
+    // PNG data
+    packet.set(pngData, 15);
+
+    log(`Sending PNG: ${size} bytes, CRC32: ${crc.toString(16)}, slot: ${bufferNum}`, 'info');
+    return await writeChunked(packet);
+  }
+
+  async function sendToDisplay() {
+    if (!connected) {
+      log('Not connected to device', 'error');
+      return;
+    }
+
+    setSending(true);
+    try {
+      // Get PNG from canvas
+      const canvas = canvasRef.current;
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const pngData = new Uint8Array(await blob.arrayBuffer());
+
+      log(`Generated PNG: ${pngData.length} bytes`, 'info');
+
+      // Send PNG
+      const success = await sendPNG(pngData, slot);
+      if (!success) {
+        log('Failed to send PNG', 'error');
+        return;
+      }
+
+      // Set animation (auto-detect direction for Hebrew)
+      const animMode = animation === 0 ? 0 :
+        (animation === 1 && isHebrew(text)) ? 2 : animation;
+      await sendAnimation(animMode, speed);
+
+      // Set rainbow
+      if (rainbow > 0) {
+        await sendRainbow(rainbow);
+      }
+
+      log(`Sent to ${slot === 0 ? 'preview' : `slot ${slot}`}!`, 'success');
+
+    } catch (err) {
+      log(`Send error: ${err.message}`, 'error');
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function loadPreset(preset, targetSlot = null) {
+    setText(preset.text);
+    if (targetSlot !== null) {
+      setSlot(targetSlot);
+    }
+    log(`Loaded preset: ${preset.name}`, 'info');
+  }
+
+  async function loadAllPresets() {
+    if (!connected) {
+      log('Not connected to device', 'error');
+      return;
+    }
+
+    setSending(true);
+    log('Loading all Purim presets to slots 1-10...', 'info');
+
+    for (let i = 0; i < PURIM_PRESETS.length; i++) {
+      const preset = PURIM_PRESETS[i];
+      const targetSlot = i + 1;
+
+      // Render preset text
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, displayWidth, displayHeight);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `700 ${fontSize}px Rubik`;
+      ctx.textBaseline = 'top';
+
+      const displayText = isHebrew(preset.text) ? reverseHebrew(preset.text) : preset.text;
+      ctx.fillText(displayText, 0, yOffset);
+
+      // Get PNG
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const pngData = new Uint8Array(await blob.arrayBuffer());
+
+      // Send
+      log(`Sending preset ${i+1}/10: ${preset.name}`, 'info');
+      await sendPNG(pngData, targetSlot);
+
+      // Set animation
+      const animMode = isHebrew(preset.text) ? 2 : 1;
+      await sendAnimation(animMode, speed);
+
+      if (rainbow > 0) {
+        await sendRainbow(rainbow);
+      }
+
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    log('All presets loaded!', 'success');
+    setSending(false);
+  }
+
+  const textIsHebrew = isHebrew(text);
+
+  return (
+    <div style={styles.container}>
+      {/* Header */}
+      <header style={styles.header}>
+        <div style={styles.headerContent}>
+          <h1 style={styles.title}>
+            <span style={styles.titleIcon}>◈</span>
+            iPIXEL MATRIX
+            <span style={styles.titleIcon}>◈</span>
+          </h1>
+          <p style={styles.subtitle}>LED DISPLAY CONTROLLER</p>
+        </div>
+        <div style={styles.connectionStatus}>
+          <div style={{
+            ...styles.statusDot,
+            backgroundColor: connected ? 'var(--accent-green)' : connecting ? 'var(--accent-yellow)' : 'var(--text-dim)',
+            boxShadow: connected ? 'var(--glow-green)' : 'none',
+          }} />
+          <span style={styles.statusText}>
+            {connected ? device?.name : connecting ? 'CONNECTING...' : 'DISCONNECTED'}
+          </span>
+        </div>
+      </header>
+
+      {/* Main Grid */}
+      <main style={styles.main}>
+        {/* Left Column - Controls */}
+        <div style={styles.leftColumn}>
+          {/* Connection Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>⚡</span>
+              CONNECTION
+            </h2>
+            <div style={styles.connectionButtons}>
+              {!connected ? (
+                <button
+                  style={{...styles.button, ...styles.buttonCyan}}
+                  onClick={connect}
+                  disabled={connecting}
+                >
+                  {connecting ? '⟳ SCANNING...' : '◉ CONNECT DEVICE'}
+                </button>
+              ) : (
+                <>
+                  <button
+                    style={{...styles.button, ...styles.buttonRed}}
+                    onClick={disconnect}
+                  >
+                    ✕ DISCONNECT
+                  </button>
+                  <button
+                    style={{...styles.button, ...styles.buttonYellow}}
+                    onClick={sendPowerOn}
+                  >
+                    ⏻ POWER ON
+                  </button>
+                </>
+              )}
+            </div>
+          </section>
+
+          {/* Text Input Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>✎</span>
+              TEXT INPUT
+            </h2>
+            <input
+              type="text"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              style={{
+                ...styles.textInput,
+                direction: textIsHebrew ? 'rtl' : 'ltr',
+                textAlign: textIsHebrew ? 'right' : 'left',
+              }}
+              placeholder="Enter text..."
+            />
+            <div style={styles.inputMeta}>
+              {textIsHebrew && <span style={styles.rtlBadge}>עברית RTL</span>}
+              <span style={styles.charCount}>{text.length} chars</span>
+            </div>
+          </section>
+
+          {/* Display Settings */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>⚙</span>
+              DISPLAY SETTINGS
+            </h2>
+            <div style={styles.settingsGrid}>
+              <div style={styles.settingRow}>
+                <label style={styles.label}>Size</label>
+                <div style={styles.sizeInputs}>
+                  <input
+                    type="number"
+                    value={displayWidth}
+                    onChange={(e) => setDisplayWidth(parseInt(e.target.value) || 32)}
+                    style={styles.numberInput}
+                  />
+                  <span style={styles.sizeSeparator}>×</span>
+                  <input
+                    type="number"
+                    value={displayHeight}
+                    onChange={(e) => setDisplayHeight(parseInt(e.target.value) || 16)}
+                    style={styles.numberInput}
+                  />
+                </div>
+              </div>
+              <div style={styles.settingRow}>
+                <label style={styles.label}>Font Size</label>
+                <input
+                  type="range"
+                  min="8"
+                  max="32"
+                  value={fontSize}
+                  onChange={(e) => setFontSize(parseInt(e.target.value))}
+                  style={styles.slider}
+                />
+                <span style={styles.sliderValue}>{fontSize}px</span>
+              </div>
+              <div style={styles.settingRow}>
+                <label style={styles.label}>Y Offset</label>
+                <input
+                  type="range"
+                  min="-10"
+                  max="10"
+                  value={yOffset}
+                  onChange={(e) => setYOffset(parseInt(e.target.value))}
+                  style={styles.slider}
+                />
+                <span style={styles.sliderValue}>{yOffset}px</span>
+              </div>
+            </div>
+          </section>
+
+          {/* Animation Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>↻</span>
+              ANIMATION
+            </h2>
+            <div style={styles.animationGrid}>
+              {ANIMATION_MODES.map(mode => (
+                <button
+                  key={mode.value}
+                  style={{
+                    ...styles.animButton,
+                    ...(animation === mode.value ? styles.animButtonActive : {}),
+                  }}
+                  onClick={() => setAnimation(mode.value)}
+                >
+                  <span style={styles.animIcon}>{mode.icon}</span>
+                  <span style={styles.animLabel}>{mode.label}</span>
+                </button>
+              ))}
+            </div>
+            <div style={styles.settingRow}>
+              <label style={styles.label}>Speed</label>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={speed}
+                onChange={(e) => setSpeed(parseInt(e.target.value))}
+                style={styles.slider}
+              />
+              <span style={styles.sliderValue}>{speed}</span>
+            </div>
+          </section>
+
+          {/* Rainbow Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={{...styles.panelIcon, animation: 'rainbow-shift 2s linear infinite'}}>🌈</span>
+              RAINBOW MODE
+            </h2>
+            <div style={styles.rainbowGrid}>
+              {RAINBOW_MODES.map(mode => (
+                <button
+                  key={mode.value}
+                  style={{
+                    ...styles.rainbowButton,
+                    ...(rainbow === mode.value ? styles.rainbowButtonActive : {}),
+                  }}
+                  onClick={() => setRainbow(mode.value)}
+                >
+                  {mode.value === 0 ? 'OFF' : mode.value}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          {/* Brightness Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>☀</span>
+              BRIGHTNESS
+            </h2>
+            <div style={styles.brightnessRow}>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={brightness}
+                onChange={(e) => setBrightness(parseInt(e.target.value))}
+                style={{...styles.slider, flex: 1}}
+              />
+              <span style={styles.brightnessValue}>{brightness}%</span>
+              <button
+                style={{...styles.button, ...styles.buttonSmall, ...styles.buttonYellow}}
+                onClick={sendBrightness}
+                disabled={!connected}
+              >
+                SET
+              </button>
+            </div>
+          </section>
+        </div>
+
+        {/* Right Column - Preview & Slots */}
+        <div style={styles.rightColumn}>
+          {/* Preview Panel */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>◫</span>
+              PREVIEW
+            </h2>
+            <div style={styles.previewContainer}>
+              <canvas ref={canvasRef} style={{ display: 'none' }} />
+              <canvas
+                ref={previewCanvasRef}
+                style={styles.previewCanvas}
+              />
+              <div style={styles.previewInfo}>
+                {displayWidth}×{displayHeight} pixels
+              </div>
+            </div>
+          </section>
+
+          {/* Slot Selection */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>▤</span>
+              MEMORY SLOT
+            </h2>
+            <div style={styles.slotGrid}>
+              {[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(s => (
+                <button
+                  key={s}
+                  style={{
+                    ...styles.slotButton,
+                    ...(slot === s ? styles.slotButtonActive : {}),
+                  }}
+                  onClick={() => setSlot(s)}
+                >
+                  {s === 0 ? '⟐' : s}
+                </button>
+              ))}
+            </div>
+            <p style={styles.slotHint}>
+              Slot 0 = Preview only • Slots 1-10 = Save to EEPROM
+            </p>
+          </section>
+
+          {/* Send Button */}
+          <button
+            style={{
+              ...styles.sendButton,
+              opacity: !connected || sending ? 0.5 : 1,
+            }}
+            onClick={sendToDisplay}
+            disabled={!connected || sending}
+          >
+            {sending ? (
+              <>⟳ SENDING...</>
+            ) : (
+              <>▶ SEND TO DISPLAY</>
+            )}
+          </button>
+
+          {/* Purim Presets */}
+          <section style={styles.panel}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>🎭</span>
+              PURIM PRESETS
+            </h2>
+            <div style={styles.presetGrid}>
+              {PURIM_PRESETS.map((preset, i) => (
+                <button
+                  key={i}
+                  style={styles.presetButton}
+                  onClick={() => loadPreset(preset)}
+                  title={preset.text}
+                >
+                  <span style={styles.presetNumber}>{i + 1}</span>
+                  <span style={styles.presetName}>{preset.name}</span>
+                </button>
+              ))}
+            </div>
+            <button
+              style={{
+                ...styles.button,
+                ...styles.buttonPurple,
+                width: '100%',
+                marginTop: '12px',
+              }}
+              onClick={loadAllPresets}
+              disabled={!connected || sending}
+            >
+              ⬇ LOAD ALL TO SLOTS 1-10
+            </button>
+          </section>
+
+          {/* Debug Log */}
+          <section style={{...styles.panel, flex: 1, minHeight: '200px'}}>
+            <h2 style={styles.panelTitle}>
+              <span style={styles.panelIcon}>⌘</span>
+              DEBUG LOG
+            </h2>
+            <div style={styles.logContainer} ref={logRef}>
+              {logs.map((log, i) => (
+                <div key={i} style={{
+                  ...styles.logEntry,
+                  color: log.type === 'error' ? '#ff4466' :
+                         log.type === 'success' ? 'var(--accent-green)' :
+                         log.type === 'warning' ? 'var(--accent-yellow)' :
+                         log.type === 'tx' ? 'var(--accent-cyan)' :
+                         log.type === 'notify' ? 'var(--accent-magenta)' :
+                         'var(--text-secondary)',
+                }}>
+                  <span style={styles.logTime}>{log.timestamp}</span>
+                  <span style={styles.logMsg}>{log.msg}</span>
+                </div>
+              ))}
+              {logs.length === 0 && (
+                <div style={styles.logEmpty}>No logs yet. Connect to a device to begin.</div>
+              )}
+            </div>
+          </section>
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer style={styles.footer}>
+        <span>Protocol: pypixelcolor (MIT) • ha-ipixel-color • go-ipxl</span>
+        <span>Chrome/Edge only • HTTPS required</span>
+      </footer>
+    </div>
+  );
+}
+
+const styles = {
+  container: {
+    minHeight: '100vh',
+    display: 'flex',
+    flexDirection: 'column',
+  },
+  header: {
+    padding: '24px 32px',
+    borderBottom: '1px solid var(--border-dim)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    background: 'linear-gradient(180deg, rgba(0,245,255,0.03) 0%, transparent 100%)',
+    flexWrap: 'wrap',
+    gap: '16px',
+  },
+  headerContent: {
+    textAlign: 'left',
+  },
+  title: {
+    fontFamily: 'Orbitron, sans-serif',
+    fontSize: '2rem',
+    fontWeight: 900,
+    letterSpacing: '0.15em',
+    background: 'linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-magenta) 50%, var(--accent-yellow) 100%)',
+    WebkitBackgroundClip: 'text',
+    WebkitTextFillColor: 'transparent',
+    backgroundClip: 'text',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+    animation: 'flicker 4s infinite',
+  },
+  titleIcon: {
+    fontSize: '1.2rem',
+    WebkitTextFillColor: 'var(--accent-cyan)',
+  },
+  subtitle: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.75rem',
+    color: 'var(--text-dim)',
+    letterSpacing: '0.3em',
+    marginTop: '4px',
+  },
+  connectionStatus: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '10px 20px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+  },
+  statusDot: {
+    width: '10px',
+    height: '10px',
+    borderRadius: '50%',
+    transition: 'all 0.3s',
+  },
+  statusText: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.8rem',
+    color: 'var(--text-secondary)',
+    letterSpacing: '0.1em',
+  },
+  main: {
+    flex: 1,
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '24px',
+    padding: '24px 32px',
+    maxWidth: '1600px',
+    margin: '0 auto',
+    width: '100%',
+  },
+  leftColumn: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+  },
+  rightColumn: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '16px',
+  },
+  panel: {
+    background: 'var(--bg-card)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '8px',
+    padding: '16px',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  panelTitle: {
+    fontFamily: 'Orbitron, sans-serif',
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    letterSpacing: '0.15em',
+    marginBottom: '16px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  panelIcon: {
+    fontSize: '1rem',
+    color: 'var(--accent-cyan)',
+  },
+  connectionButtons: {
+    display: 'flex',
+    gap: '12px',
+    flexWrap: 'wrap',
+  },
+  button: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.8rem',
+    fontWeight: 500,
+    padding: '10px 20px',
+    border: '1px solid',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    textTransform: 'uppercase',
+    letterSpacing: '0.05em',
+  },
+  buttonCyan: {
+    background: 'rgba(0, 245, 255, 0.1)',
+    borderColor: 'var(--accent-cyan)',
+    color: 'var(--accent-cyan)',
+    '&:hover': {
+      background: 'rgba(0, 245, 255, 0.2)',
+    },
+  },
+  buttonRed: {
+    background: 'rgba(255, 68, 102, 0.1)',
+    borderColor: '#ff4466',
+    color: '#ff4466',
+  },
+  buttonYellow: {
+    background: 'rgba(255, 238, 0, 0.1)',
+    borderColor: 'var(--accent-yellow)',
+    color: 'var(--accent-yellow)',
+  },
+  buttonPurple: {
+    background: 'rgba(170, 68, 255, 0.1)',
+    borderColor: 'var(--accent-purple)',
+    color: 'var(--accent-purple)',
+  },
+  buttonSmall: {
+    padding: '6px 12px',
+    fontSize: '0.7rem',
+  },
+  textInput: {
+    width: '100%',
+    padding: '14px 16px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    color: 'var(--text-primary)',
+    fontFamily: 'Rubik, sans-serif',
+    fontSize: '1.1rem',
+    fontWeight: 500,
+    outline: 'none',
+    transition: 'border-color 0.2s',
+  },
+  inputMeta: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: '8px',
+  },
+  rtlBadge: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.7rem',
+    padding: '4px 8px',
+    background: 'rgba(170, 68, 255, 0.2)',
+    border: '1px solid var(--accent-purple)',
+    borderRadius: '4px',
+    color: 'var(--accent-purple)',
+  },
+  charCount: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.7rem',
+    color: 'var(--text-dim)',
+  },
+  settingsGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  },
+  settingRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  label: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.75rem',
+    color: 'var(--text-secondary)',
+    minWidth: '80px',
+  },
+  sizeInputs: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  numberInput: {
+    width: '60px',
+    padding: '8px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    color: 'var(--text-primary)',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.9rem',
+    textAlign: 'center',
+    outline: 'none',
+  },
+  sizeSeparator: {
+    color: 'var(--text-dim)',
+  },
+  slider: {
+    flex: 1,
+    height: '4px',
+    appearance: 'none',
+    background: 'var(--bg-secondary)',
+    borderRadius: '2px',
+    outline: 'none',
+    cursor: 'pointer',
+  },
+  sliderValue: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.8rem',
+    color: 'var(--accent-cyan)',
+    minWidth: '45px',
+    textAlign: 'right',
+  },
+  animationGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, 1fr)',
+    gap: '8px',
+    marginBottom: '16px',
+  },
+  animButton: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '4px',
+    padding: '10px 8px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    color: 'var(--text-secondary)',
+  },
+  animButtonActive: {
+    borderColor: 'var(--accent-cyan)',
+    background: 'rgba(0, 245, 255, 0.1)',
+    color: 'var(--accent-cyan)',
+    boxShadow: 'var(--glow-cyan)',
+  },
+  animIcon: {
+    fontSize: '1.2rem',
+  },
+  animLabel: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.6rem',
+    textTransform: 'uppercase',
+  },
+  rainbowGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(5, 1fr)',
+    gap: '8px',
+  },
+  rainbowButton: {
+    padding: '10px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.8rem',
+    color: 'var(--text-secondary)',
+    transition: 'all 0.2s',
+  },
+  rainbowButtonActive: {
+    background: 'linear-gradient(135deg, rgba(255,0,0,0.2), rgba(255,127,0,0.2), rgba(255,255,0,0.2), rgba(0,255,0,0.2), rgba(0,0,255,0.2), rgba(139,0,255,0.2))',
+    borderColor: 'var(--accent-magenta)',
+    color: 'var(--text-primary)',
+    boxShadow: 'var(--glow-magenta)',
+  },
+  brightnessRow: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  brightnessValue: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.9rem',
+    color: 'var(--accent-yellow)',
+    minWidth: '50px',
+  },
+  previewContainer: {
+    position: 'relative',
+    background: '#000',
+    borderRadius: '4px',
+    padding: '16px',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    border: '2px solid var(--border-glow)',
+  },
+  previewCanvas: {
+    maxWidth: '100%',
+    height: 'auto',
+    imageRendering: 'pixelated',
+    borderRadius: '2px',
+  },
+  previewInfo: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.7rem',
+    color: 'var(--text-dim)',
+    marginTop: '12px',
+  },
+  slotGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(11, 1fr)',
+    gap: '6px',
+  },
+  slotButton: {
+    aspectRatio: '1',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.9rem',
+    fontWeight: 700,
+    color: 'var(--text-secondary)',
+    transition: 'all 0.2s',
+  },
+  slotButtonActive: {
+    borderColor: 'var(--accent-green)',
+    background: 'rgba(0, 255, 136, 0.15)',
+    color: 'var(--accent-green)',
+    boxShadow: 'var(--glow-green)',
+  },
+  slotHint: {
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.65rem',
+    color: 'var(--text-dim)',
+    marginTop: '8px',
+    textAlign: 'center',
+  },
+  sendButton: {
+    width: '100%',
+    padding: '18px',
+    background: 'linear-gradient(135deg, rgba(0, 255, 136, 0.2) 0%, rgba(0, 200, 100, 0.3) 100%)',
+    border: '2px solid var(--accent-green)',
+    borderRadius: '8px',
+    color: 'var(--accent-green)',
+    fontFamily: 'Orbitron, sans-serif',
+    fontSize: '1.1rem',
+    fontWeight: 700,
+    letterSpacing: '0.1em',
+    cursor: 'pointer',
+    transition: 'all 0.3s',
+    boxShadow: 'var(--glow-green)',
+  },
+  presetGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, 1fr)',
+    gap: '8px',
+  },
+  presetButton: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '10px 12px',
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    transition: 'all 0.2s',
+    textAlign: 'left',
+  },
+  presetNumber: {
+    width: '24px',
+    height: '24px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(170, 68, 255, 0.2)',
+    border: '1px solid var(--accent-purple)',
+    borderRadius: '4px',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.75rem',
+    fontWeight: 700,
+    color: 'var(--accent-purple)',
+    flexShrink: 0,
+  },
+  presetName: {
+    fontFamily: 'Rubik, sans-serif',
+    fontSize: '0.8rem',
+    color: 'var(--text-secondary)',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  logContainer: {
+    background: '#000',
+    border: '1px solid var(--border-dim)',
+    borderRadius: '4px',
+    padding: '12px',
+    height: '200px',
+    overflowY: 'auto',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.7rem',
+    lineHeight: '1.6',
+  },
+  logEntry: {
+    display: 'flex',
+    gap: '8px',
+  },
+  logTime: {
+    color: 'var(--text-dim)',
+    flexShrink: 0,
+  },
+  logMsg: {
+    wordBreak: 'break-all',
+  },
+  logEmpty: {
+    color: 'var(--text-dim)',
+    fontStyle: 'italic',
+  },
+  footer: {
+    padding: '16px 32px',
+    borderTop: '1px solid var(--border-dim)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    fontFamily: 'JetBrains Mono, monospace',
+    fontSize: '0.65rem',
+    color: 'var(--text-dim)',
+    flexWrap: 'wrap',
+    gap: '8px',
+  },
+};
+
+// Add responsive styles
+const styleSheet = document.createElement('style');
+styleSheet.textContent = `
+  @media (max-width: 900px) {
+    main {
+      grid-template-columns: 1fr !important;
+    }
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--accent-cyan);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(0, 245, 255, 0.5);
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--accent-cyan);
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+  }
+
+  input:focus, button:focus {
+    outline: 1px solid var(--accent-cyan);
+    outline-offset: 2px;
+  }
+
+  button:hover:not(:disabled) {
+    filter: brightness(1.2);
+    transform: translateY(-1px);
+  }
+
+  button:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .preset-button:hover {
+    border-color: var(--accent-purple) !important;
+    background: rgba(170, 68, 255, 0.1) !important;
+  }
+`;
+document.head.appendChild(styleSheet);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
