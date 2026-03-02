@@ -139,8 +139,8 @@ export default function App() {
     ctx.font = `700 ${fontSize}px Rubik`;
     ctx.textBaseline = 'top';
 
-    const displayText = isHebrew(text) ? reverseHebrew(text) : text;
-    ctx.fillText(displayText, 0, yOffset);
+    // Don't reverse for preview - show text as user expects to see it
+    ctx.fillText(text, 0, yOffset);
 
     // Draw pixelated preview
     const pCtx = preview.getContext('2d');
@@ -323,7 +323,21 @@ export default function App() {
 
     setSending(true);
     try {
+      // Render text for device (reverse Hebrew for correct RTL scrolling)
       const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, displayWidth, displayHeight);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `700 ${fontSize}px Rubik`;
+      ctx.textBaseline = 'top';
+
+      const deviceText = isHebrew(text) ? reverseHebrew(text) : text;
+      ctx.fillText(deviceText, 0, yOffset);
+
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       const pngData = new Uint8Array(await blob.arrayBuffer());
 
@@ -344,6 +358,12 @@ export default function App() {
       }
 
       log(`Sent to ${slot === 0 ? 'preview' : `slot ${slot}`}!`, 'success');
+
+      // Re-render preview (canvas was modified for device)
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(0, 0, displayWidth, displayHeight);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, 0, yOffset);
 
     } catch (err) {
       log(`Send error: ${err.message}`, 'error');
