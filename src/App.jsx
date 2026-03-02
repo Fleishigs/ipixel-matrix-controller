@@ -88,6 +88,9 @@ export default function App() {
   const [slot, setSlot] = useState(0);
   const [brightness, setBrightness] = useState(80);
 
+  const [deviceFilter, setDeviceFilter] = useState('LED_BLE_');
+  const [scanAll, setScanAll] = useState(false);
+
   const [logs, setLogs] = useState([]);
   const [sending, setSending] = useState(false);
   const [fontLoaded, setFontLoaded] = useState(false);
@@ -174,12 +177,23 @@ export default function App() {
 
     try {
       setConnecting(true);
-      log('Scanning for LED_BLE_ devices...', 'info');
 
-      const bleDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'LED_BLE_' }],
-        optionalServices: [SERVICE_UUID]
-      });
+      let requestOptions;
+      if (scanAll) {
+        log('Scanning for ALL Bluetooth devices...', 'info');
+        requestOptions = {
+          acceptAllDevices: true,
+          optionalServices: [SERVICE_UUID]
+        };
+      } else {
+        log(`Scanning for devices with prefix "${deviceFilter}"...`, 'info');
+        requestOptions = {
+          filters: [{ namePrefix: deviceFilter }],
+          optionalServices: [SERVICE_UUID]
+        };
+      }
+
+      const bleDevice = await navigator.bluetooth.requestDevice(requestOptions);
 
       log(`Found device: ${bleDevice.name}`, 'success');
 
@@ -428,6 +442,33 @@ export default function App() {
               <span className="panel-icon">⚡</span>
               CONNECTION
             </h2>
+
+            {/* Device Filter Controls */}
+            <div className="filter-row">
+              <label className="filter-label">
+                <input
+                  type="checkbox"
+                  checked={scanAll}
+                  onChange={(e) => setScanAll(e.target.checked)}
+                  className="checkbox"
+                />
+                <span className="checkbox-label">Scan All Devices</span>
+              </label>
+            </div>
+
+            {!scanAll && (
+              <div className="filter-input-row">
+                <label className="label">Name Prefix</label>
+                <input
+                  type="text"
+                  value={deviceFilter}
+                  onChange={(e) => setDeviceFilter(e.target.value)}
+                  className="filter-input"
+                  placeholder="LED_BLE_"
+                />
+              </div>
+            )}
+
             <div className="connection-buttons">
               {!connected ? (
                 <button
